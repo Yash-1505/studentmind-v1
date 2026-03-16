@@ -160,6 +160,7 @@ export default function App() {
             apiKey={settings.apiKeys[settings.activeProvider]||(settings.activeProvider==="gemini"?(process.env.GEMINI_API_KEY||""):"")}
             selectedModel={currentModel} sarvamKey={settings.sarvamKey}
             googleTranslateKey={settings.googleTranslateKey} initialMessages={currentMessages}
+            sessionId={currentSessionId}
             onSessionUpdate={handleSessionUpdate} onNewSession={handleNewSession}/>
         </main>
       </div>

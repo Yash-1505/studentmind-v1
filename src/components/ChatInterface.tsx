@@ -47,38 +47,68 @@ function fmt(iso: string) { return new Date(iso).toLocaleTimeString("en-US",{hou
 function fileToBase64(f: File): Promise<string> {
   return new Promise((res,rej)=>{const r=new FileReader();r.readAsDataURL(f);r.onload=()=>res((r.result as string).split(",")[1]);r.onerror=rej;});
 }
+
 async function translate(text:string,lang:string,sk:string,gk:string):Promise<string>{
-  if(lang==="English"||!text)return text;
+  if(lang==="English"||!text) return text;
   try{
     if(INDIAN.includes(lang)&&sk){
       const lm:Record<string,string>={Hindi:"hi-IN",Tamil:"ta-IN",Telugu:"te-IN",Kannada:"kn-IN",Bengali:"bn-IN",Marathi:"mr-IN",Malayalam:"ml-IN",Gujarati:"gu-IN",Punjabi:"pa-IN"};
       const r=await fetch("https://api.sarvam.ai/translate",{method:"POST",headers:{"Content-Type":"application/json","api-subscription-key":sk},body:JSON.stringify({input:text,source_language_code:"en-IN",target_language_code:lm[lang]||"hi-IN",mode:"formal",enable_preprocessing:true})});
-      const d=await r.json();return d.translated_text||text;
+      const d=await r.json(); return d.translated_text||text;
     }else if(gk){
       const cm:Record<string,string>={French:"fr",Spanish:"es",German:"de",Arabic:"ar",Japanese:"ja",Chinese:"zh"};
       const r=await fetch(`https://translation.googleapis.com/language/translate/v2?key=${gk}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({q:text,source:"en",target:cm[lang]||lang.slice(0,2).toLowerCase(),format:"text"})});
-      const d=await r.json();return d.data?.translations?.[0]?.translatedText||text;
+      const d=await r.json(); return d.data?.translations?.[0]?.translatedText||text;
     }
-  }catch(e){console.warn("Translation failed:",e);}
+  }catch(e){ console.warn("Translation failed:",e); }
   return text;
 }
+
+// ─── Rebuild AI history from saved messages (for session restore) ──────────────
+
+function rebuildGeminiHistory(messages: ChatMessage[]): Array<{role:"user"|"model";parts:Part[]}> {
+  const history: Array<{role:"user"|"model";parts:Part[]}> = [];
+  for(const msg of messages){
+    if(msg.id==="welcome"||msg.isError) continue;
+    history.push({
+      role: msg.sender==="user"?"user":"model",
+      parts:[{text: msg.text}],
+    });
+  }
+  // Keep last 40 turns
+  return history.slice(-40);
+}
+
+function rebuildChatHistory(messages: ChatMessage[]): Array<{role:string;content:string}> {
+  const history: Array<{role:string;content:string}> = [];
+  for(const msg of messages){
+    if(msg.id==="welcome"||msg.isError) continue;
+    history.push({
+      role: msg.sender==="user"?"user":"assistant",
+      content: msg.text,
+    });
+  }
+  return history.slice(-40);
+}
+
+// ─── Provider callers ──────────────────────────────────────────────────────────
 
 async function callOpenAICompat(base:string,key:string,model:string,sys:string,msgs:Array<{role:string;content:string}>):Promise<string>{
   const r=await fetch(`${base}/chat/completions`,{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${key}`},body:JSON.stringify({model,messages:[{role:"system",content:sys},...msgs],temperature:0.7,max_tokens:4096})});
   if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e?.error?.message||`API error ${r.status}`);}
-  const d=await r.json();return d.choices?.[0]?.message?.content||"No response.";
+  const d=await r.json(); return d.choices?.[0]?.message?.content||"No response.";
 }
 async function callAnthropic(key:string,model:string,sys:string,msgs:Array<{role:string;content:string}>):Promise<string>{
   const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model,max_tokens:4096,system:sys,messages:msgs})});
   if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e?.error?.message||`Anthropic error ${r.status}`);}
-  const d=await r.json();return d.content?.[0]?.text||"No response.";
+  const d=await r.json(); return d.content?.[0]?.text||"No response.";
 }
 async function callCohere(key:string,model:string,sys:string,msgs:Array<{role:string;content:string}>):Promise<string>{
   const history=msgs.slice(0,-1).map(m=>({role:m.role==="assistant"?"CHATBOT":"USER",message:m.content}));
   const last=msgs[msgs.length-1]?.content||"";
   const r=await fetch("https://api.cohere.com/v1/chat",{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${key}`},body:JSON.stringify({model,message:last,preamble:sys,chat_history:history,max_tokens:4096})});
   if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e?.message||`Cohere error ${r.status}`);}
-  const d=await r.json();return d.text||"No response.";
+  const d=await r.json(); return d.text||"No response.";
 }
 
 // ─── Welcome ───────────────────────────────────────────────────────────────────
@@ -113,6 +143,7 @@ interface Props {
   selectedModel: string;
   sarvamKey: string;
   googleTranslateKey: string;
+  sessionId: string;
   initialMessages?: ChatMessage[];
   onSessionUpdate?: (messages: ChatMessage[]) => void;
   onNewSession?: () => void;
@@ -122,7 +153,7 @@ interface Props {
 
 export default function ChatInterface({
   language, trackProgress, activeProvider, apiKey, selectedModel,
-  sarvamKey, googleTranslateKey, initialMessages, onSessionUpdate, onNewSession
+  sarvamKey, googleTranslateKey, sessionId, initialMessages, onSessionUpdate, onNewSession
 }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages || [makeWelcome()]);
   const [input, setInput] = useState("");
@@ -143,114 +174,193 @@ export default function ChatInterface({
   const geminiHistory = useRef<Array<{role:"user"|"model";parts:Part[]}>>([]);
   const chatHistory = useRef<Array<{role:string;content:string}>>([]);
 
-  useEffect(()=>{ geminiHistory.current=[]; chatHistory.current=[]; },[activeProvider,selectedModel]);
-  useEffect(()=>{ onSessionUpdate?.(messages); },[messages]);
+  // ── FIX 1: Session switch — reset messages + rebuild AI history from saved msgs ──
+  const prevSessionId = useRef<string>(sessionId);
   useEffect(()=>{
-    if(initialMessages){ setMessages(initialMessages); geminiHistory.current=[]; chatHistory.current=[]; }
-  },[initialMessages]);
-  useEffect(()=>{ messagesEndRef.current?.scrollIntoView({behavior:"smooth"}); },[messages]);
+    if(sessionId === prevSessionId.current) return; // same session, skip
+    prevSessionId.current = sessionId;
+    const msgs = initialMessages || [makeWelcome()];
+    setMessages(msgs);
+    setTopicsCovered([]);
+    // Rebuild AI context from restored messages so the AI remembers the conversation
+    geminiHistory.current = rebuildGeminiHistory(msgs);
+    chatHistory.current = rebuildChatHistory(msgs);
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── FIX 2: Provider / model change — clear history only ──
+  useEffect(()=>{
+    geminiHistory.current = [];
+    chatHistory.current = [];
+  }, [activeProvider, selectedModel]);
+
+  // ── Scroll to bottom on new messages ──
+  useEffect(()=>{
+    messagesEndRef.current?.scrollIntoView({behavior:"smooth"});
+  }, [messages]);
+
+  // ── Auto-resize textarea ──
   useEffect(()=>{
     if(textareaRef.current){
       textareaRef.current.style.height="auto";
       textareaRef.current.style.height=Math.min(textareaRef.current.scrollHeight,120)+"px";
     }
-  },[input]);
+  }, [input]);
+
+  // ── Voice recording handler ──
   useEffect(()=>{
-    if(!mediaRecorder)return;
+    if(!mediaRecorder) return;
     const chunks:Blob[]=[];
     mediaRecorder.ondataavailable=(e)=>chunks.push(e.data);
-    mediaRecorder.onstop=()=>{setSelectedFile(new File([new Blob(chunks,{type:"audio/webm"})], "voice-note.webm",{type:"audio/webm"}));setIsRecording(false);};
-  },[mediaRecorder]);
+    mediaRecorder.onstop=()=>{
+      setSelectedFile(new File([new Blob(chunks,{type:"audio/webm"})], "voice-note.webm",{type:"audio/webm"}));
+      setIsRecording(false);
+    };
+  }, [mediaRecorder]);
 
-  const callAI = useCallback(async(userText:string,file:File|null,mode:Mode):Promise<string>=>{
+  // ─── AI router ─────────────────────────────────────────────────────────────────
+
+  const callAI = useCallback(async(userText:string, file:File|null, mode:Mode):Promise<string>=>{
     if(!apiKey.trim()) throw new Error("No API key set. Open Settings ⚙ to add your key.");
     const sys = MODE_PROMPTS[mode];
+
     if(activeProvider==="gemini"){
-      const ai=new GoogleGenAI({apiKey});
-      const parts:Part[]=[];
+      const ai = new GoogleGenAI({apiKey});
+      const parts:Part[] = [];
       if(userText.trim()) parts.push({text:userText});
       if(file){
-        const mime=file.type;
+        const mime = file.type;
         if(mime.startsWith("image/")||mime.startsWith("video/")||mime.startsWith("audio/")||mime==="application/pdf"){
           parts.push({inlineData:{data:await fileToBase64(file),mimeType:mime}});
         }else{
-          try{parts.push({text:`\n\n[File: ${file.name}]\n\n${await file.text()}`});}
-          catch{parts.push({inlineData:{data:await fileToBase64(file),mimeType:mime||"application/octet-stream"}});}
+          try{ parts.push({text:`\n\n[File: ${file.name}]\n\n${await file.text()}`}); }
+          catch{ parts.push({inlineData:{data:await fileToBase64(file),mimeType:mime||"application/octet-stream"}}); }
         }
       }
       if(!parts.length) return "Please type a message or upload a file.";
-      const contents=[...geminiHistory.current,{role:"user" as const,parts}];
-      const res=await ai.models.generateContent({model:selectedModel,contents,config:{systemInstruction:sys,thinkingConfig:{thinkingBudget:selectedModel.includes("flash")?0:8000}}});
-      const text=res.text??"No response.";
+      const contents = [...geminiHistory.current, {role:"user" as const, parts}];
+      const res = await ai.models.generateContent({model:selectedModel, contents, config:{systemInstruction:sys, thinkingConfig:{thinkingBudget:selectedModel.includes("flash")?0:8000}}});
+      const text = res.text ?? "No response.";
       geminiHistory.current.push({role:"user",parts},{role:"model",parts:[{text}]});
-      if(geminiHistory.current.length>40) geminiHistory.current=geminiHistory.current.slice(-40);
+      if(geminiHistory.current.length>40) geminiHistory.current = geminiHistory.current.slice(-40);
       return text;
     }
-    let content=userText;
-    if(file){try{content=`${userText}\n\n[File: ${file.name}]\n\n${await file.text()}`;}catch{content=`${userText}\n\n[File: ${file.name} — binary]`;}}
-    chatHistory.current.push({role:"user",content});
-    if(chatHistory.current.length>40) chatHistory.current=chatHistory.current.slice(-40);
+
+    // All other providers
+    let content = userText;
+    if(file){
+      try{ content = `${userText}\n\n[File: ${file.name}]\n\n${await file.text()}`; }
+      catch{ content = `${userText}\n\n[File: ${file.name} — binary]`; }
+    }
+    chatHistory.current.push({role:"user", content});
+    if(chatHistory.current.length>40) chatHistory.current = chatHistory.current.slice(-40);
+
     let result:string;
-    if(activeProvider==="openai") result=await callOpenAICompat("https://api.openai.com/v1",apiKey,selectedModel,sys,chatHistory.current);
-    else if(activeProvider==="groq") result=await callOpenAICompat("https://api.groq.com/openai/v1",apiKey,selectedModel,sys,chatHistory.current);
-    else if(activeProvider==="mistral") result=await callOpenAICompat("https://api.mistral.ai/v1",apiKey,selectedModel,sys,chatHistory.current);
-    else if(activeProvider==="anthropic") result=await callAnthropic(apiKey,selectedModel,sys,chatHistory.current);
-    else if(activeProvider==="cohere") result=await callCohere(apiKey,selectedModel,sys,chatHistory.current);
+    if(activeProvider==="openai")     result = await callOpenAICompat("https://api.openai.com/v1",apiKey,selectedModel,sys,chatHistory.current);
+    else if(activeProvider==="groq")  result = await callOpenAICompat("https://api.groq.com/openai/v1",apiKey,selectedModel,sys,chatHistory.current);
+    else if(activeProvider==="mistral") result = await callOpenAICompat("https://api.mistral.ai/v1",apiKey,selectedModel,sys,chatHistory.current);
+    else if(activeProvider==="anthropic") result = await callAnthropic(apiKey,selectedModel,sys,chatHistory.current);
+    else if(activeProvider==="cohere") result = await callCohere(apiKey,selectedModel,sys,chatHistory.current);
     else throw new Error(`Unknown provider: ${activeProvider}`);
-    chatHistory.current.push({role:"assistant",content:result});
+
+    chatHistory.current.push({role:"assistant", content:result});
     return result;
-  },[activeProvider,apiKey,selectedModel]);
+  }, [activeProvider, apiKey, selectedModel]);
 
-  const handleSend = async()=>{
-    if(loading||(input.trim()===""&&!selectedFile))return;
-    const userText=input.trim(), file=selectedFile;
-    const userMsg:ChatMessage={id:genId(),text:userText||`📎 ${file?.name}`,sender:"user",mode:currentMode,fileInfo:file?{name:file.name,type:file.type}:undefined,timestamp:new Date().toISOString()};
-    setMessages(prev=>[...prev,userMsg]);
-    setInput(""); setSelectedFile(null); setLoading(true);
+  // ─── FIX 3: handleSend — single atomic update, one save per exchange ───────────
+
+  const handleSend = useCallback(async()=>{
+    if(loading||(input.trim()===""&&!selectedFile)) return;
+    const userText = input.trim();
+    const file = selectedFile;
+
+    const userMsg:ChatMessage = {
+      id:genId(), text:userText||`📎 ${file?.name}`, sender:"user",
+      mode:currentMode, fileInfo:file?{name:file.name,type:file.type}:undefined,
+      timestamp:new Date().toISOString(),
+    };
+
+    // Optimistically add user message to UI
+    const withUser = (prev: ChatMessage[]) => [...prev, userMsg];
+    setMessages(withUser);
+    setInput("");
+    setSelectedFile(null);
+    setLoading(true);
+
     try{
-      let resp=await callAI(userText,file,currentMode);
-      if(language!=="English") resp=await translate(resp,language,sarvamKey,googleTranslateKey);
-      if(trackProgress&&userText) setTopicsCovered(prev=>[...new Set([...prev,userText.slice(0,50)])]);
-      setMessages(prev=>[...prev,{id:genId(),text:resp,sender:"ai",mode:currentMode,timestamp:new Date().toISOString()}]);
+      let resp = await callAI(userText, file, currentMode);
+      if(language!=="English") resp = await translate(resp, language, sarvamKey, googleTranslateKey);
+      if(trackProgress && userText) setTopicsCovered(prev=>[...new Set([...prev, userText.slice(0,50)])]);
+
+      const aiMsg:ChatMessage = {
+        id:genId(), text:resp, sender:"ai",
+        mode:currentMode, timestamp:new Date().toISOString(),
+      };
+
+      // FIX: single setMessages call combining both messages, then one save
+      setMessages(prev=>{
+        const next = [...prev, aiMsg];
+        // Call onSessionUpdate once with final state — not via useEffect
+        onSessionUpdate?.(next);
+        return next;
+      });
     }catch(err:any){
-      setMessages(prev=>[...prev,{id:genId(),text:`⚠️ **Error**: ${err.message}`,sender:"ai",mode:currentMode,timestamp:new Date().toISOString(),isError:true}]);
-    }finally{setLoading(false);}
-  };
+      const errMsg:ChatMessage = {
+        id:genId(), text:`⚠️ **Error**: ${err.message}`, sender:"ai",
+        mode:currentMode, timestamp:new Date().toISOString(), isError:true,
+      };
+      setMessages(prev=>{
+        const next = [...prev, errMsg];
+        onSessionUpdate?.(next);
+        return next;
+      });
+    }finally{
+      setLoading(false);
+    }
+  }, [loading, input, selectedFile, currentMode, callAI, language, sarvamKey, googleTranslateKey, trackProgress, onSessionUpdate]);
 
-  const handleCopy=async(text:string,id:string)=>{
+  // ─── Other handlers ────────────────────────────────────────────────────────────
+
+  const handleCopy = useCallback(async(text:string, id:string)=>{
     await navigator.clipboard.writeText(text);
-    setCopiedId(id); setTimeout(()=>setCopiedId(null),2000);
-  };
+    setCopiedId(id);
+    setTimeout(()=>setCopiedId(null), 2000);
+  }, []);
 
-  const handleShare=async(type:"copy"|"url")=>{
+  const handleShare = useCallback(async(type:"copy"|"url")=>{
     if(type==="copy"){
-      const md=shareAsMarkdown(messages,activeProvider,selectedModel);
-      await navigator.clipboard.writeText(md);
+      await navigator.clipboard.writeText(shareAsMarkdown(messages,activeProvider,selectedModel));
       setShareToast("✓ Conversation copied as Markdown!");
     }else{
-      const url=generateShareUrl(messages);
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(generateShareUrl(messages));
       setShareToast("✓ Share link copied!");
     }
-    setTimeout(()=>setShareToast(null),3000);
-  };
+    setTimeout(()=>setShareToast(null), 3000);
+  }, [messages, activeProvider, selectedModel]);
 
-  const handleConvExport=async(format:"md"|"txt"|"pdf"|"docx")=>{
+  const handleConvExport = useCallback(async(format:"md"|"txt"|"pdf"|"docx")=>{
     setConvExportLoading(format);
-    try{ await exportConversation(messages,format,activeProvider,selectedModel); }
+    try{ await exportConversation(messages, format, activeProvider, selectedModel); }
     catch(e){ console.error(e); }
     finally{ setConvExportLoading(null); setShowConvExport(false); }
-  };
+  }, [messages, activeProvider, selectedModel]);
 
-  const handleKeyDown=(e:React.KeyboardEvent<HTMLTextAreaElement>)=>{
-    if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();handleSend();}
-  };
+  const handleKeyDown = useCallback((e:React.KeyboardEvent<HTMLTextAreaElement>)=>{
+    if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); handleSend(); }
+  }, [handleSend]);
 
-  const startRecording=async()=>{
-    try{const s=await navigator.mediaDevices.getUserMedia({audio:true});const r=new MediaRecorder(s);setMediaRecorder(r);r.start();setIsRecording(true);}
-    catch{alert("Microphone access denied.");}
-  };
-  const stopRecording=()=>{ if(mediaRecorder){mediaRecorder.stop();mediaRecorder.stream.getTracks().forEach(t=>t.stop());} };
+  const startRecording = useCallback(async()=>{
+    try{
+      const s = await navigator.mediaDevices.getUserMedia({audio:true});
+      const r = new MediaRecorder(s);
+      setMediaRecorder(r); r.start(); setIsRecording(true);
+    }catch{ alert("Microphone access denied."); }
+  }, []);
+
+  const stopRecording = useCallback(()=>{
+    if(mediaRecorder){ mediaRecorder.stop(); mediaRecorder.stream.getTracks().forEach(t=>t.stop()); }
+  }, [mediaRecorder]);
+
+  // ─── Render ────────────────────────────────────────────────────────────────────
 
   const cfg = MODE_CONFIG[currentMode];
   const noKey = !apiKey.trim();
@@ -271,14 +381,14 @@ export default function ChatInterface({
       <div className="flex-shrink-0" style={{borderBottom:"1px solid var(--border)",background:"var(--bg-surface)"}}>
         <div className="flex items-center gap-1 px-3 pt-2.5 pb-2 overflow-x-auto" style={{scrollbarWidth:"none"}}>
           {(Object.values(Mode) as Mode[]).map(mode=>{
-            const mc=MODE_CONFIG[mode];
-            const active=currentMode===mode;
+            const mc = MODE_CONFIG[mode];
+            const active = currentMode===mode;
             return(
               <button key={mode} onClick={()=>setCurrentMode(mode)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-all flex-shrink-0"
                 style={{
                   background: active?mc.dimColor:"transparent",
-                  border: `1px solid ${active?mc.borderColor:"transparent"}`,
+                  border:`1px solid ${active?mc.borderColor:"transparent"}`,
                   color: active?mc.color:"var(--text-muted)",
                   fontFamily:"var(--font-body)",
                 }}>
@@ -334,8 +444,8 @@ export default function ChatInterface({
 
         {/* Mode hint + progress */}
         <div className="flex items-center gap-2 px-4 pb-2">
-          <span style={{color:cfg.color, fontSize:11}}>{cfg.icon}</span>
-          <span style={{color:"var(--text-faint)", fontSize:11, fontFamily:"var(--font-body)"}}>{cfg.hint}</span>
+          <span style={{color:cfg.color,fontSize:11}}>{cfg.icon}</span>
+          <span style={{color:"var(--text-faint)",fontSize:11,fontFamily:"var(--font-body)"}}>{cfg.hint}</span>
           {trackProgress&&topicsCovered.length>0&&(
             <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full"
               style={{color:"var(--blue)",background:"var(--blue-dim)",border:"1px solid var(--blue-border)"}}>
@@ -345,7 +455,7 @@ export default function ChatInterface({
         </div>
       </div>
 
-      {/* No key warning */}
+      {/* No API key warning */}
       {noKey&&(
         <div className="mx-4 mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl flex-shrink-0"
           style={{background:"var(--yellow-dim)",border:"1px solid var(--yellow-border)"}}>
@@ -359,8 +469,8 @@ export default function ChatInterface({
       {/* ── Messages ── */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5" onClick={()=>setShowConvExport(false)}>
         {messages.map(msg=>{
-          const isUser=msg.sender==="user";
-          const mc=msg.mode?MODE_CONFIG[msg.mode]:null;
+          const isUser = msg.sender==="user";
+          const mc = msg.mode?MODE_CONFIG[msg.mode]:null;
           return(
             <div key={msg.id} className={`flex ${isUser?"justify-end":"justify-start"} gap-3 msg-in`}>
               {!isUser&&(
@@ -388,16 +498,14 @@ export default function ChatInterface({
                 {/* Bubble */}
                 <div className="rounded-2xl px-4 py-3 text-sm leading-relaxed"
                   style={isUser?{
-                    background:"var(--blue)",
-                    color:"white",
+                    background:"var(--blue)", color:"white",
                     borderBottomRightRadius:4,
                     boxShadow:"0 2px 16px var(--blue-glow)",
                     fontFamily:"var(--font-body)",
                   }:msg.isError?{
                     background:"rgba(255,80,80,0.08)",
                     border:"1px solid rgba(255,80,80,0.2)",
-                    color:"#ff8080",
-                    borderBottomLeftRadius:4,
+                    color:"#ff8080", borderBottomLeftRadius:4,
                     fontFamily:"var(--font-body)",
                   }:{
                     background:"var(--bg-card)",
@@ -405,18 +513,17 @@ export default function ChatInterface({
                     borderBottomLeftRadius:4,
                     fontFamily:"var(--font-body)",
                   }}>
-                  {isUser?(
-                    <span className="whitespace-pre-wrap">{msg.text}</span>
-                  ):(
-                    <div className="sm-prose"><ReactMarkdown>{msg.text}</ReactMarkdown></div>
-                  )}
+                  {isUser
+                    ? <span className="whitespace-pre-wrap">{msg.text}</span>
+                    : <div className="sm-prose"><ReactMarkdown>{msg.text}</ReactMarkdown></div>
+                  }
                 </div>
                 {/* Message actions */}
                 {!isUser&&msg.id!=="welcome"&&!msg.isError&&(
                   <div className="flex items-center gap-0.5 mt-0.5">
                     <button onClick={()=>handleCopy(msg.text,msg.id)}
                       className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] transition-all"
-                      style={{color:copiedId===msg.id?"var(--blue)":"var(--text-faint)",background:"transparent"}}
+                      style={{color:copiedId===msg.id?"var(--blue)":"var(--text-faint)"}}
                       onMouseEnter={e=>(e.currentTarget.style.background="var(--bg-elevated)")}
                       onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
                       {copiedId===msg.id?<><Check size={10}/> Copied</>:<><Copy size={10}/> Copy</>}
@@ -431,14 +538,15 @@ export default function ChatInterface({
           );
         })}
 
-        {/* Loading */}
+        {/* Loading indicator */}
         {loading&&(
           <div className="flex justify-start gap-3">
             <div className="w-7 h-7 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 glow-pulse"
               style={{background:"linear-gradient(135deg,#5BBCFF,#7EA1FF)"}}>
               <span style={{fontSize:10,color:"white",fontFamily:"var(--font-display)",fontWeight:700}}>S</span>
             </div>
-            <div className="rounded-2xl px-4 py-3 flex items-center gap-2.5" style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderBottomLeftRadius:4}}>
+            <div className="rounded-2xl px-4 py-3 flex items-center gap-2.5"
+              style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderBottomLeftRadius:4}}>
               <Loader2 size={13} className="animate-spin" style={{color:"var(--blue)"}}/>
               <span style={{color:"var(--text-muted)",fontSize:12,fontFamily:"var(--font-body)"}}>Thinking…</span>
               <span style={{color:"var(--text-faint)",fontSize:10}}>{selectedModel}</span>
@@ -465,8 +573,8 @@ export default function ChatInterface({
       <div className="px-4 pb-4 pt-2 flex-shrink-0" style={{borderTop:"1px solid var(--border)"}}>
         <div className="flex items-end gap-2 rounded-2xl px-3 py-2 transition-all"
           style={{background:"var(--bg-elevated)",border:`1px solid ${noKey?"var(--yellow-border)":"var(--border)"}`}}
-          onFocus={e=>{const parent=e.currentTarget;parent.style.borderColor="var(--blue-border)";}}
-          onBlur={e=>{const parent=e.currentTarget;parent.style.borderColor=noKey?"var(--yellow-border)":"var(--border)";}}>
+          onFocus={e=>{(e.currentTarget as HTMLElement).style.borderColor="var(--blue-border)";}}
+          onBlur={e=>{(e.currentTarget as HTMLElement).style.borderColor=noKey?"var(--yellow-border)":"var(--border)";}}>
           <button onClick={()=>fileInputRef.current?.click()}
             className="p-1.5 flex-shrink-0 mb-0.5 opacity-30 hover:opacity-80 transition-opacity"
             style={{color:"var(--text-primary)"}} title="Upload file">
@@ -483,7 +591,7 @@ export default function ChatInterface({
           <textarea ref={textareaRef} rows={1}
             className="flex-1 bg-transparent resize-none outline-none leading-relaxed py-1.5 text-sm"
             style={{color:"var(--text-primary)",fontFamily:"var(--font-body)"}}
-            placeholder={noKey?`Add your API key in Settings first…`:`Ask about anything${language!=="English"?` · responding in ${language}`:""}…`}
+            placeholder={noKey?"Add your API key in Settings first…":`Ask about anything${language!=="English"?` · responding in ${language}`:""}…`}
             value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={loading}
           />
           <button onClick={handleSend} disabled={loading||(input.trim()===""&&!selectedFile)}
@@ -492,7 +600,7 @@ export default function ChatInterface({
               background:loading||(input.trim()===""&&!selectedFile)?"var(--bg-card)":"var(--blue)",
               color:loading||(input.trim()===""&&!selectedFile)?"var(--text-faint)":"white",
               cursor:loading||(input.trim()===""&&!selectedFile)?"not-allowed":"pointer",
-              boxShadow: loading||(input.trim()===""&&!selectedFile)?"none":"0 2px 12px var(--blue-glow)",
+              boxShadow:loading||(input.trim()===""&&!selectedFile)?"none":"0 2px 12px var(--blue-glow)",
             }}>
             <Send size={14}/>
           </button>
