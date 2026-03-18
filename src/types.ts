@@ -14,6 +14,7 @@ export interface ChatMessage {
   text: string;
   sender: "user" | "ai";
   mode?: Mode;
+  model?: string;
   fileInfo?: { name: string; type: string };
   timestamp: string; // ISO string for JSON serialization
   isError?: boolean;
@@ -25,14 +26,25 @@ export interface Session {
   messages: ChatMessage[];
   provider: string;
   model: string;
+  sourceIds: string[]; // Added per-session sources
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SavedNote {
+  id: string;
+  title: string;
+  content: string;
+  mode: Mode;
+  model: string;
+  savedAt: string;
 }
 
 export interface AIModel {
   id: string;
   label: string;
   description: string;
+  contextWindow: number; // Max tokens/chars
   fast?: boolean;
   smart?: boolean;
 }
@@ -60,4 +72,13 @@ export interface AppSettings {
   trackProgress: boolean;
   sarvamKey: string;
   googleTranslateKey: string;
+}
+
+export interface SourceFile {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  content: string; // Base64 or text content
+  addedAt: string;
 }

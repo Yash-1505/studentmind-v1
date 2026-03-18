@@ -5,14 +5,14 @@ const DATE = () => new Date().toLocaleDateString("en-US", { year: "numeric", mon
 
 // ─── Markdown export ──────────────────────────────────────────────────────────
 
-export function exportMarkdown(text: string, mode: Mode, title?: string): void {
-  const content = `# ${title || `StudentMind — ${mode}`}\n_Exported on ${DATE()}_\n\n---\n\n${text}`;
+export function exportMarkdown(text: string, mode: Mode, title?: string, model?: string): void {
+  const content = `# ${title || `StudentMind — ${mode}`}\n_Exported on ${DATE()} ${model ? `using ${model.split("/").pop()}` : ""}_\n\n---\n\n${text}`;
   downloadBlob(content, `studentmind-${slug(mode)}.md`, "text/markdown");
 }
 
 // ─── Plain text export ────────────────────────────────────────────────────────
 
-export function exportText(text: string, mode: Mode): void {
+export function exportText(text: string, mode: Mode, model?: string): void {
   const stripped = text
     .replace(/#{1,6}\s+/g, "")
     .replace(/\*\*(.*?)\*\*/g, "$1")
@@ -22,13 +22,13 @@ export function exportText(text: string, mode: Mode): void {
     .replace(/^\|.*\|$/gm, (row) => row.replace(/\|/g, " ").replace(/\s{2,}/g, " ").trim())
     .replace(/^[-*]\s+/gm, "• ")
     .replace(/^\d+\.\s+/gm, (m) => m);
-  const content = `StudentMind — ${mode}\nExported on ${DATE()}\n\n${stripped}`;
+  const content = `StudentMind — ${mode}\nExported on ${DATE()} ${model ? `using ${model.split("/").pop()}` : ""}\n\n${stripped}`;
   downloadBlob(content, `studentmind-${slug(mode)}.txt`, "text/plain");
 }
 
 // ─── PDF export ───────────────────────────────────────────────────────────────
 
-export async function exportPDF(text: string, mode: Mode, title?: string): Promise<void> {
+export async function exportPDF(text: string, mode: Mode, title?: string, model?: string): Promise<void> {
   // Dynamically import html2pdf to avoid SSR issues
   const html2pdf = (await import("html2pdf.js")).default;
 
@@ -38,7 +38,7 @@ export async function exportPDF(text: string, mode: Mode, title?: string): Promi
         <h1 style="font-size: 24px; font-weight: 700; color: #0f172a; margin: 0 0 6px 0;">
           ${title || `StudentMind — ${mode}`}
         </h1>
-        <p style="font-size: 12px; color: #64748b; margin: 0;">Exported on ${DATE()}</p>
+        <p style="font-size: 12px; color: #64748b; margin: 0;">Exported on ${DATE()} ${model ? `using ${model.split("/").pop()}` : ""}</p>
       </div>
       <div style="line-height: 1.7; font-size: 13.5px;">
         ${markdownToHtml(text)}
@@ -65,7 +65,7 @@ export async function exportPDF(text: string, mode: Mode, title?: string): Promi
 
 // ─── DOCX export ──────────────────────────────────────────────────────────────
 
-export async function exportDocx(text: string, mode: Mode, title?: string): Promise<void> {
+export async function exportDocx(text: string, mode: Mode, title?: string, model?: string): Promise<void> {
   const lines = text.split("\n");
   const children: Paragraph[] = [];
 
@@ -77,7 +77,7 @@ export async function exportDocx(text: string, mode: Mode, title?: string): Prom
       spacing: { after: 160 },
     }),
     new Paragraph({
-      children: [new TextRun({ text: `Exported on ${DATE()}`, size: 20, color: "64748B", italics: true })],
+      children: [new TextRun({ text: `Exported on ${DATE()} ${model ? `using ${model.split("/").pop()}` : ""}`, size: 20, color: "64748B", italics: true })],
       spacing: { after: 400 },
     })
   );

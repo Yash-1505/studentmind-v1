@@ -3,7 +3,7 @@ import { Download, FileText, File, BookOpen, Loader2 } from "lucide-react";
 import type { Mode } from "../types";
 import { exportMarkdown, exportText, exportPDF, exportDocx } from "../utils/export";
 
-interface Props { text: string; mode: Mode; title?: string; }
+interface Props { text: string; mode: Mode; model?: string; title?: string; }
 
 const FORMATS = [
   { id:"pdf",  label:"PDF",           icon:<File size={11}/>,     desc:"Formatted & printable",  color:"var(--pink)" },
@@ -29,10 +29,10 @@ export default function ExportMenu({ text, mode, title }: Props) {
   async function handleExport(format: string) {
     setLoading(format);
     try {
-      if (format === "md") exportMarkdown(text, mode, title);
-      else if (format === "txt") exportText(text, mode);
-      else if (format === "pdf") await exportPDF(text, mode, title);
-      else if (format === "docx") await exportDocx(text, mode, title);
+      if (format === "md") exportMarkdown(text, mode, title, model);
+      else if (format === "txt") exportText(text, mode, model);
+      else if (format === "pdf") await exportPDF(text, mode, title, model);
+      else if (format === "docx") await exportDocx(text, mode, title, model);
       setDone(format);
       setTimeout(() => { setDone(null); setOpen(false); }, 1500);
     } catch (err) {
@@ -45,30 +45,31 @@ export default function ExportMenu({ text, mode, title }: Props) {
   return (
     <div className="relative" ref={ref}>
       <button onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] transition-all"
-        style={{color:"var(--text-faint)",background:"transparent"}}
-        onMouseEnter={e=>(e.currentTarget.style.background="var(--bg-elevated)")}
-        onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-        <Download size={10}/> Export
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] transition-all hover:bg-white/5"
+        style={{color:"var(--text-muted)",background:"transparent"}}>
+        <Download size={11}/> Export
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 w-48 rounded-2xl overflow-hidden z-20 shadow-2xl"
-          style={{background:"var(--bg-card)",border:"1px solid var(--border-md)",boxShadow:"0 8px 32px rgba(0,0,0,0.5)"}}>
-          <div className="px-3 py-2" style={{borderBottom:"1px solid var(--border)"}}>
-            <p style={{color:"var(--text-faint)",fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",fontFamily:"var(--font-display)",fontWeight:600}}>Export as</p>
+        <div className="absolute bottom-full left-0 mb-2 w-52 rounded-2xl overflow-hidden z-20 shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-200"
+          style={{background:"var(--bg-card)",border:"1px solid var(--border-md)",boxShadow:"0 12px 48px rgba(0,0,0,0.5)"}}>
+          <div className="px-3 py-2.5" style={{borderBottom:"1px solid var(--border)"}}>
+            <p style={{color:"var(--text-faint)",fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",fontFamily:"var(--font-display)",fontWeight:700}}>Export block as</p>
           </div>
           {FORMATS.map(fmt => (
             <button key={fmt.id} onClick={() => handleExport(fmt.id)} disabled={loading === fmt.id}
-              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/5">
-              <span style={{color: done===fmt.id?"var(--blue)":fmt.color}}>
-                {loading === fmt.id ? <Loader2 size={11} className="animate-spin"/> : fmt.icon}
-              </span>
+              className="w-full flex items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-white/5 group">
+              <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform group-hover:scale-110" 
+                style={{background:done===fmt.id?"var(--blue-dim)":"rgba(255,255,255,0.03)"}}>
+                <span style={{color: done===fmt.id?"var(--blue)":fmt.color}}>
+                  {loading === fmt.id ? <Loader2 size={12} className="animate-spin"/> : fmt.icon}
+                </span>
+              </div>
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium" style={{color:done===fmt.id?"var(--blue)":"var(--text-secondary)",fontFamily:"var(--font-body)"}}>
-                  {done === fmt.id ? "✓ Downloaded!" : fmt.label}
+                <p className="text-[11.5px] font-semibold transition-colors group-hover:text-white" style={{color:done===fmt.id?"var(--blue)":"var(--text-secondary)",fontFamily:"var(--font-body)"}}>
+                  {done === fmt.id ? "✓ Ready!" : fmt.label}
                 </p>
-                <p style={{color:"var(--text-faint)",fontSize:10,fontFamily:"var(--font-body)"}}>{fmt.desc}</p>
+                <p style={{color:"var(--text-faint)",fontSize:9.5,fontFamily:"var(--font-body)"}}>{fmt.desc}</p>
               </div>
             </button>
           ))}

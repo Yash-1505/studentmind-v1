@@ -7,9 +7,11 @@ import {
   RotateCcw, Download
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import ExportMenu from "./ExportMenu";
-import { Mode, type ChatMessage } from "../types";
+import { Mode, type ChatMessage, type SourceFile } from "../types";
 import { exportConversation, shareAsMarkdown, generateShareUrl } from "../utils/export";
+import { getRelevantContext } from "../utils/rag";
 
 // ─── Mode config ───────────────────────────────────────────────────────────────
 
@@ -110,6 +112,15 @@ async function callCohere(key:string,model:string,sys:string,msgs:Array<{role:st
   if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e?.message||`Cohere error ${r.status}`);}
   const d=await r.json(); return d.text||"No response.";
 }
+async function callOllama(model:string,sys:string,msgs:Array<{role:string;content:string}>):Promise<string>{
+  try {
+    const r=await fetch("http://localhost:11434/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model,messages:[{role:"system",content:sys},...msgs],stream:false})});
+    if(!r.ok){throw new Error(`Ollama error ${r.status}. Make sure Ollama is running.`);}
+    const d=await r.json(); return d.message?.content||"No response.";
+  } catch (e: any) {
+    throw new Error(`Failed to connect to Ollama: ${e.message}. Is it running on localhost:11434?`);
+  }
+}
 
 // ─── Welcome ───────────────────────────────────────────────────────────────────
 
@@ -140,20 +151,23 @@ interface Props {
   trackProgress: boolean;
   activeProvider: string;
   apiKey: string;
+  geminiKey: string;
   selectedModel: string;
   sarvamKey: string;
   googleTranslateKey: string;
   sessionId: string;
+  selectedSources?: SourceFile[];
   initialMessages?: ChatMessage[];
   onSessionUpdate?: (messages: ChatMessage[]) => void;
   onNewSession?: () => void;
+  onSaveNote?: (msg: ChatMessage) => void;
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 export default function ChatInterface({
-  language, trackProgress, activeProvider, apiKey, selectedModel,
-  sarvamKey, googleTranslateKey, sessionId, initialMessages, onSessionUpdate, onNewSession
+  language, trackProgress, activeProvider, apiKey, geminiKey, selectedModel,
+  sarvamKey, googleTranslateKey, sessionId, selectedSources, initialMessages, onSessionUpdate, onNewSession, onSaveNote
 }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages || [makeWelcome()]);
   const [input, setInput] = useState("");
@@ -220,13 +234,38 @@ export default function ChatInterface({
   // ─── AI router ─────────────────────────────────────────────────────────────────
 
   const callAI = useCallback(async(userText:string, file:File|null, mode:Mode):Promise<string>=>{
-    if(!apiKey.trim()) throw new Error("No API key set. Open Settings ⚙ to add your key.");
+    if(!apiKey.trim() && activeProvider !== "ollama") throw new Error("No API key set. Open Settings ⚙ to add your key.");
     const sys = MODE_PROMPTS[mode];
+
+    // Build knowledge context from selected sources using local RAG indexing
+    let knowledgeContext = "";
+    if (selectedSources && selectedSources.length > 0) {
+      if (geminiKey) {
+        knowledgeContext = await getRelevantContext(userText, selectedSources, geminiKey, 5);
+      } else {
+        // Fallback if no Gemini key: pass raw text (truncated if too large)
+        const validSources = activeProvider === "sarvam" 
+          ? selectedSources.filter(s => s.type.startsWith("text/") || s.name.match(/\.(md|txt|csv)$/))
+          : selectedSources;
+        if (validSources.length > 0) {
+          knowledgeContext = "\n\n--- KNOWLEDGE SOURCES ---\n" + 
+            validSources.slice(0, 5).map(s => `[File: ${s.name}]\n${s.content.slice(0, 15000)}`).join("\n\n") + 
+            "\n--- END KNOWLEDGE SOURCES ---\n\n";
+        }
+      }
+    }
 
     if(activeProvider==="gemini"){
       const ai = new GoogleGenAI({apiKey});
       const parts:Part[] = [];
-      if(userText.trim()) parts.push({text:userText});
+      
+      // Add text including knowledge context
+      let promptText = userText;
+      if (knowledgeContext) {
+        promptText = `${knowledgeContext}User Question: ${userText}`;
+      }
+      if(promptText.trim()) parts.push({text:promptText});
+
       if(file){
         const mime = file.type;
         if(mime.startsWith("image/")||mime.startsWith("video/")||mime.startsWith("audio/")||mime==="application/pdf"){
@@ -246,7 +285,7 @@ export default function ChatInterface({
     }
 
     // All other providers
-    let content = userText;
+    let content = knowledgeContext ? `${knowledgeContext}User Question: ${userText}` : userText;
     if(file){
       try{ content = `${userText}\n\n[File: ${file.name}]\n\n${await file.text()}`; }
       catch{ content = `${userText}\n\n[File: ${file.name} — binary]`; }
@@ -260,6 +299,9 @@ export default function ChatInterface({
     else if(activeProvider==="mistral") result = await callOpenAICompat("https://api.mistral.ai/v1",apiKey,selectedModel,sys,chatHistory.current);
     else if(activeProvider==="anthropic") result = await callAnthropic(apiKey,selectedModel,sys,chatHistory.current);
     else if(activeProvider==="cohere") result = await callCohere(apiKey,selectedModel,sys,chatHistory.current);
+    else if(activeProvider==="sarvam") result = await callOpenAICompat("https://api.sarvam.ai/indus/v1",apiKey,selectedModel,sys,chatHistory.current);
+    else if(activeProvider==="nvidia") result = await callOpenAICompat("https://integrate.api.nvidia.com/v1",apiKey,selectedModel,sys,chatHistory.current);
+    else if(activeProvider==="ollama") result = await callOllama(selectedModel,sys,chatHistory.current);
     else throw new Error(`Unknown provider: ${activeProvider}`);
 
     chatHistory.current.push({role:"assistant", content:result});
@@ -293,7 +335,7 @@ export default function ChatInterface({
 
       const aiMsg:ChatMessage = {
         id:genId(), text:resp, sender:"ai",
-        mode:currentMode, timestamp:new Date().toISOString(),
+        mode:currentMode, model:selectedModel, timestamp:new Date().toISOString(),
       };
 
       // FIX: single setMessages call combining both messages, then one save
@@ -378,21 +420,21 @@ export default function ChatInterface({
       )}
 
       {/* ── Mode Tabs ── */}
-      <div className="flex-shrink-0" style={{borderBottom:"1px solid var(--border)",background:"var(--bg-surface)"}}>
-        <div className="flex items-center gap-1 px-3 pt-2.5 pb-2 overflow-x-auto" style={{scrollbarWidth:"none"}}>
+      <div id="tour-mode-tabs" className="flex-shrink-0 z-10" style={{borderBottom:"1px solid var(--border)",background:"var(--bg-surface)",boxShadow:"0 4px 12px rgba(0,0,0,0.1)"}}>
+        <div className="flex items-center gap-1 px-3 pt-2.5 pb-2 overflow-x-auto scrollbar-hide">
           {(Object.values(Mode) as Mode[]).map(mode=>{
             const mc = MODE_CONFIG[mode];
             const active = currentMode===mode;
             return(
               <button key={mode} onClick={()=>setCurrentMode(mode)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-all flex-shrink-0"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-medium whitespace-nowrap transition-all flex-shrink-0 hover:bg-white/5"
                 style={{
                   background: active?mc.dimColor:"transparent",
                   border:`1px solid ${active?mc.borderColor:"transparent"}`,
                   color: active?mc.color:"var(--text-muted)",
                   fontFamily:"var(--font-body)",
                 }}>
-                <span>{mc.icon}</span>
+                <span className="opacity-80">{mc.icon}</span>
                 <span>{mc.shortLabel}</span>
               </button>
             );
@@ -403,37 +445,37 @@ export default function ChatInterface({
             <div className="flex items-center gap-1 ml-auto flex-shrink-0">
               <div className="relative">
                 <button onClick={()=>setShowConvExport(!showConvExport)}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] transition-all"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] transition-all hover:bg-white/5"
                   style={{color:"var(--text-muted)",border:"1px solid transparent"}}
                   title="Export conversation">
                   <Download size={11}/> Export
                 </button>
                 {showConvExport&&(
                   <div className="absolute top-full right-0 mt-1.5 w-48 rounded-2xl overflow-hidden z-30 shadow-2xl"
-                    style={{background:"var(--bg-card)",border:"1px solid var(--border-md)"}}>
+                    style={{background:"var(--bg-card)",border:"1px solid var(--border-md)",boxShadow:"0 12px 32px rgba(0,0,0,0.4)"}}>
                     <div className="px-3 py-2" style={{borderBottom:"1px solid var(--border)"}}>
-                      <p style={{color:"var(--text-faint)",fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",fontFamily:"var(--font-display)"}}>Full conversation</p>
+                      <p style={{color:"var(--text-faint)",fontSize:10,letterSpacing:"0.08em",textTransform:"uppercase",fontFamily:"var(--font-display)",fontWeight:600}}>Full conversation</p>
                     </div>
                     {(["pdf","docx","md","txt"] as const).map(f=>(
                       <button key={f} onClick={()=>handleConvExport(f)}
-                        className="w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-white/5">
-                        <span className="text-xs" style={{color:"var(--text-secondary)"}}>{f==="pdf"?"PDF":f==="docx"?"Word (.docx)":f==="md"?"Markdown":"Plain Text"}</span>
-                        {convExportLoading===f&&<Loader2 size={10} className="animate-spin" style={{color:"var(--blue)"}}/>}
+                        className="w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-white/5 group">
+                        <span className="text-xs group-hover:text-white transition-colors" style={{color:"var(--text-secondary)"}}>{f==="pdf"?"PDF":f==="docx"?"Word (.docx)":f==="md"?"Markdown":"Plain Text"}</span>
+                        {convExportLoading===f?<Loader2 size={10} className="animate-spin" style={{color:"var(--blue)"}}/>:<Download size={10} className="opacity-0 group-hover:opacity-40 transition-opacity" style={{color:"var(--text-muted)"}}/>}
                       </button>
                     ))}
                     <div style={{borderTop:"1px solid var(--border)"}}>
-                      <button onClick={()=>handleShare("copy")} className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-white/5">
-                        <Copy size={10} style={{color:"var(--text-muted)"}}/><span className="text-xs" style={{color:"var(--text-secondary)"}}>Copy as Markdown</span>
+                      <button onClick={()=>handleShare("copy")} className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-white/5 group">
+                        <Copy size={10} className="group-hover:text-[var(--blue)] transition-colors" style={{color:"var(--text-muted)"}}/><span className="text-xs group-hover:text-white transition-colors" style={{color:"var(--text-secondary)"}}>Copy as Markdown</span>
                       </button>
-                      <button onClick={()=>handleShare("url")} className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-white/5">
-                        <Share2 size={10} style={{color:"var(--text-muted)"}}/><span className="text-xs" style={{color:"var(--text-secondary)"}}>Copy share link</span>
+                      <button onClick={()=>handleShare("url")} className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-white/5 group">
+                        <Share2 size={10} className="group-hover:text-[var(--blue)] transition-colors" style={{color:"var(--text-muted)"}}/><span className="text-xs group-hover:text-white transition-colors" style={{color:"var(--text-secondary)"}}>Copy share link</span>
                       </button>
                     </div>
                   </div>
                 )}
               </div>
               <button onClick={onNewSession}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] transition-all"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] transition-all hover:bg-white/5"
                 style={{color:"var(--text-muted)",border:"1px solid transparent"}}
                 title="New session">
                 <RotateCcw size={11}/> New
@@ -445,9 +487,9 @@ export default function ChatInterface({
         {/* Mode hint + progress */}
         <div className="flex items-center gap-2 px-4 pb-2">
           <span style={{color:cfg.color,fontSize:11}}>{cfg.icon}</span>
-          <span style={{color:"var(--text-faint)",fontSize:11,fontFamily:"var(--font-body)"}}>{cfg.hint}</span>
+          <span style={{color:"var(--text-faint)",fontSize:10.5,fontFamily:"var(--font-body)",letterSpacing:"0.01em"}}>{cfg.hint}</span>
           {trackProgress&&topicsCovered.length>0&&(
-            <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full"
+            <span className="ml-auto text-[10px] px-2.5 py-0.5 rounded-full font-medium"
               style={{color:"var(--blue)",background:"var(--blue-dim)",border:"1px solid var(--blue-border)"}}>
               📊 {topicsCovered.length} topics
             </span>
@@ -457,79 +499,91 @@ export default function ChatInterface({
 
       {/* No API key warning */}
       {noKey&&(
-        <div className="mx-4 mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl flex-shrink-0"
+        <div className="mx-4 mt-3 flex items-center gap-2.5 px-4 py-2.5 rounded-2xl flex-shrink-0 animate-in fade-in slide-in-from-top-2 duration-300"
           style={{background:"var(--yellow-dim)",border:"1px solid var(--yellow-border)"}}>
-          <AlertTriangle size={13} style={{color:"var(--yellow)",flexShrink:0}}/>
-          <p style={{color:"var(--yellow)",fontSize:11,fontFamily:"var(--font-body)"}}>
-            No API key set. Open <strong>Settings ⚙</strong> in the top-right to add your key.
+          <AlertTriangle size={14} style={{color:"var(--yellow)",flexShrink:0}}/>
+          <p style={{color:"var(--yellow)",fontSize:11,fontFamily:"var(--font-body)",lineHeight:1.4}}>
+            No API key set. Open <strong>Settings ⚙</strong> in the top-right to add your key and start chatting.
           </p>
         </div>
       )}
 
       {/* ── Messages ── */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5" onClick={()=>setShowConvExport(false)}>
+      <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6" onClick={()=>setShowConvExport(false)}>
         {messages.map(msg=>{
           const isUser = msg.sender==="user";
           const mc = msg.mode?MODE_CONFIG[msg.mode]:null;
           return(
-            <div key={msg.id} className={`flex ${isUser?"justify-end":"justify-start"} gap-3 msg-in`}>
+            <div key={msg.id} className={`flex ${isUser?"justify-end":"justify-start"} gap-3.5 group msg-in`}>
               {!isUser&&(
-                <div className="w-7 h-7 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5"
-                  style={{background:"linear-gradient(135deg,#5BBCFF,#7EA1FF)",boxShadow:"0 0 12px rgba(91,188,255,0.2)"}}>
-                  <span style={{fontSize:10,color:"white",fontFamily:"var(--font-display)",fontWeight:700}}>S</span>
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5"
+                  style={{background:"linear-gradient(135deg,#5BBCFF,#7EA1FF)",boxShadow:"0 4px 12px rgba(91,188,255,0.25)"}}>
+                  <span style={{fontSize:11,color:"white",fontFamily:"var(--font-display)",fontWeight:700}}>S</span>
                 </div>
               )}
-              <div className={`max-w-[78%] flex flex-col gap-1 ${isUser?"items-end":"items-start"}`}>
+              <div className={`max-w-[82%] flex flex-col gap-1.5 ${isUser?"items-end":"items-start"}`}>
                 {/* Mode label */}
                 {!isUser&&msg.mode&&msg.id!=="welcome"&&mc&&(
-                  <div className="flex items-center gap-1.5" style={{color:mc.color,fontSize:10}}>
+                  <div className="flex items-center gap-2 px-1" style={{color:mc.color,fontSize:10}}>
                     {mc.icon}
-                    <span style={{fontFamily:"var(--font-display)",fontWeight:600,letterSpacing:"0.02em"}}>{mc.shortLabel}</span>
-                    <span style={{color:"var(--text-faint)",marginLeft:2}}>{fmt(msg.timestamp)}</span>
+                    <span style={{fontFamily:"var(--font-display)",fontWeight:600,letterSpacing:"0.04em",textTransform:"uppercase"}}>{mc.shortLabel}</span>
+                    {msg.model && (
+                      <span className="px-1.5 py-0.5 rounded-md" style={{background:"rgba(255,255,255,0.05)", color:"var(--text-muted)", fontSize:9, fontWeight:500}}>
+                        {msg.model.split("/").pop()}
+                      </span>
+                    )}
+                    <span style={{color:"var(--text-faint)",marginLeft:2,fontWeight:400}}>{fmt(msg.timestamp)}</span>
                   </div>
                 )}
                 {/* File chip */}
                 {msg.fileInfo&&(
-                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs mb-0.5"
-                    style={{background:"var(--bg-elevated)",border:"1px solid var(--border)",color:"var(--text-muted)"}}>
-                    <FileText size={11}/><span>{msg.fileInfo.name}</span>
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs mb-1 transition-all hover:bg-white/5"
+                    style={{background:"var(--bg-elevated)",border:"1px solid var(--border)",color:"var(--text-secondary)"}}>
+                    <FileText size={12} style={{color:"var(--blue)"}}/>
+                    <span className="font-medium truncate max-w-[200px]">{msg.fileInfo.name}</span>
                   </div>
                 )}
                 {/* Bubble */}
-                <div className="rounded-2xl px-4 py-3 text-sm leading-relaxed"
+                <div className={`rounded-2xl px-5 py-3.5 text-[13.5px] leading-relaxed transition-all duration-200 ${isUser?"hover:translate-x-[-2px]":"hover:translate-x-[2px]"}`}
                   style={isUser?{
-                    background:"var(--blue)", color:"white",
+                    background:"linear-gradient(135deg, var(--blue), #4A90E2)", 
+                    color:"white",
                     borderBottomRightRadius:4,
-                    boxShadow:"0 2px 16px var(--blue-glow)",
+                    boxShadow:"0 4px 16px var(--blue-glow)",
                     fontFamily:"var(--font-body)",
+                    fontWeight: 450,
                   }:msg.isError?{
-                    background:"rgba(255,80,80,0.08)",
-                    border:"1px solid rgba(255,80,80,0.2)",
+                    background:"rgba(255,80,80,0.06)",
+                    border:"1px solid rgba(255,80,80,0.15)",
                     color:"#ff8080", borderBottomLeftRadius:4,
                     fontFamily:"var(--font-body)",
                   }:{
                     background:"var(--bg-card)",
                     border:"1px solid var(--border)",
                     borderBottomLeftRadius:4,
+                    boxShadow:"0 2px 8px rgba(0,0,0,0.1)",
                     fontFamily:"var(--font-body)",
                   }}>
                   {isUser
                     ? <span className="whitespace-pre-wrap">{msg.text}</span>
-                    : <div className="sm-prose"><ReactMarkdown>{msg.text}</ReactMarkdown></div>
+                    : <div className="sm-prose"><ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown></div>
                   }
                 </div>
                 {/* Message actions */}
                 {!isUser&&msg.id!=="welcome"&&!msg.isError&&(
-                  <div className="flex items-center gap-0.5 mt-0.5">
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-[-4px] group-hover:translate-y-0">
                     <button onClick={()=>handleCopy(msg.text,msg.id)}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] transition-all"
-                      style={{color:copiedId===msg.id?"var(--blue)":"var(--text-faint)"}}
-                      onMouseEnter={e=>(e.currentTarget.style.background="var(--bg-elevated)")}
-                      onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-                      {copiedId===msg.id?<><Check size={10}/> Copied</>:<><Copy size={10}/> Copy</>}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] transition-all hover:bg-white/5"
+                      style={{color:copiedId===msg.id?"var(--blue)":"var(--text-muted)"}}>
+                      {copiedId===msg.id?<><Check size={11}/> Copied</>:<><Copy size={11}/> Copy</>}
+                    </button>
+                    <button onClick={()=>onSaveNote?.(msg)}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] transition-all hover:bg-white/5"
+                      style={{color:"var(--text-muted)"}}>
+                      <Bookmark size={11}/> Pin
                     </button>
                     {msg.mode&&msg.mode!==Mode.CHAT&&(
-                      <ExportMenu text={msg.text} mode={msg.mode}/>
+                      <ExportMenu text={msg.text} mode={msg.mode} model={msg.model}/>
                     )}
                   </div>
                 )}
@@ -540,73 +594,89 @@ export default function ChatInterface({
 
         {/* Loading indicator */}
         {loading&&(
-          <div className="flex justify-start gap-3">
-            <div className="w-7 h-7 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 glow-pulse"
+          <div className="flex justify-start gap-3.5 msg-in">
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 glow-pulse"
               style={{background:"linear-gradient(135deg,#5BBCFF,#7EA1FF)"}}>
-              <span style={{fontSize:10,color:"white",fontFamily:"var(--font-display)",fontWeight:700}}>S</span>
+              <span style={{fontSize:11,color:"white",fontFamily:"var(--font-display)",fontWeight:700}}>S</span>
             </div>
-            <div className="rounded-2xl px-4 py-3 flex items-center gap-2.5"
-              style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderBottomLeftRadius:4}}>
-              <Loader2 size={13} className="animate-spin" style={{color:"var(--blue)"}}/>
-              <span style={{color:"var(--text-muted)",fontSize:12,fontFamily:"var(--font-body)"}}>Thinking…</span>
-              <span style={{color:"var(--text-faint)",fontSize:10}}>{selectedModel}</span>
+            <div className="rounded-2xl px-5 py-3.5 flex items-center gap-3 transition-all"
+              style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderBottomLeftRadius:4,boxShadow:"0 4px 12px rgba(0,0,0,0.1)"}}>
+              <div className="relative">
+                <Loader2 size={14} className="animate-spin" style={{color:"var(--blue)"}}/>
+                <div className="absolute inset-0 animate-ping opacity-20" style={{background:"var(--blue)", borderRadius:"50%"}}></div>
+              </div>
+              <div className="flex flex-col">
+                <span style={{color:"var(--text-secondary)",fontSize:13,fontFamily:"var(--font-body)",fontWeight:500}}>Thinking…</span>
+                <span style={{color:"var(--text-faint)",fontSize:10,letterSpacing:"0.02em"}}>{selectedModel.split("/").pop()}</span>
+              </div>
             </div>
           </div>
         )}
-        <div ref={messagesEndRef}/>
+        <div ref={messagesEndRef} className="h-4"/>
       </div>
 
       {/* File preview */}
       {selectedFile&&(
-        <div className="mx-4 mb-2 flex items-center gap-2 px-3 py-2 rounded-xl flex-shrink-0"
-          style={{background:"var(--bg-elevated)",border:"1px solid var(--border)"}}>
-          <FileText size={13} style={{color:"var(--text-muted)",flexShrink:0}}/>
-          <span className="text-xs truncate flex-1" style={{color:"var(--text-secondary)"}}>{selectedFile.name}</span>
-          <span className="text-[10px]" style={{color:"var(--text-faint)"}}>{(selectedFile.size/1024).toFixed(1)} KB</span>
-          <button onClick={()=>setSelectedFile(null)} className="ml-1 opacity-40 hover:opacity-90 transition-opacity" style={{color:"var(--text-primary)"}}>
-            <X size={13}/>
+        <div className="mx-4 mb-3 flex items-center gap-3 px-3.5 py-2.5 rounded-2xl flex-shrink-0 animate-in fade-in slide-in-from-bottom-2 duration-300"
+          style={{background:"var(--bg-elevated)",border:"1px solid var(--blue-border)",boxShadow:"0 4px 12px rgba(0,0,0,0.1)"}}>
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{background:"var(--blue-dim)"}}>
+            <FileText size={16} style={{color:"var(--blue)"}}/>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[12px] font-medium truncate" style={{color:"var(--text-primary)"}}>{selectedFile.name}</p>
+            <p className="text-[10px]" style={{color:"var(--text-faint)"}}>{(selectedFile.size/1024).toFixed(1)} KB · {selectedFile.type.split("/")[1]?.toUpperCase() || "File"}</p>
+          </div>
+          <button onClick={()=>setSelectedFile(null)} className="p-1.5 rounded-lg hover:bg-white/5 transition-colors" style={{color:"var(--text-muted)"}}>
+            <X size={15}/>
           </button>
         </div>
       )}
 
       {/* ── Input ── */}
-      <div className="px-4 pb-4 pt-2 flex-shrink-0" style={{borderTop:"1px solid var(--border)"}}>
-        <div className="flex items-end gap-2 rounded-2xl px-3 py-2 transition-all"
-          style={{background:"var(--bg-elevated)",border:`1px solid ${noKey?"var(--yellow-border)":"var(--border)"}`}}
-          onFocus={e=>{(e.currentTarget as HTMLElement).style.borderColor="var(--blue-border)";}}
-          onBlur={e=>{(e.currentTarget as HTMLElement).style.borderColor=noKey?"var(--yellow-border)":"var(--border)";}}>
-          <button onClick={()=>fileInputRef.current?.click()}
-            className="p-1.5 flex-shrink-0 mb-0.5 opacity-30 hover:opacity-80 transition-opacity"
-            style={{color:"var(--text-primary)"}} title="Upload file">
-            <Upload size={15}/>
-          </button>
-          <input ref={fileInputRef} type="file" className="hidden"
-            onChange={(e:ChangeEvent<HTMLInputElement>)=>{if(e.target.files?.[0])setSelectedFile(e.target.files[0]);}}
-            accept="image/*,video/*,audio/*,.pdf,.txt,.md,.docx,.csv"/>
-          <button onClick={isRecording?stopRecording:startRecording}
-            className="p-1.5 flex-shrink-0 mb-0.5 transition-all"
-            style={{color:isRecording?"#ff6b6b":"var(--text-primary)",opacity:isRecording?1:0.3}}>
-            {isRecording?<StopCircle size={15} className="animate-pulse"/>:<Mic size={15}/>}
-          </button>
-          <textarea ref={textareaRef} rows={1}
-            className="flex-1 bg-transparent resize-none outline-none leading-relaxed py-1.5 text-sm"
-            style={{color:"var(--text-primary)",fontFamily:"var(--font-body)"}}
-            placeholder={noKey?"Add your API key in Settings first…":`Ask about anything${language!=="English"?` · responding in ${language}`:""}…`}
-            value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={loading}
-          />
-          <button onClick={handleSend} disabled={loading||(input.trim()===""&&!selectedFile)}
-            className="p-2 rounded-xl flex-shrink-0 transition-all"
+      <div id="tour-input-area" className="px-4 pb-6 pt-2 flex-shrink-0" style={{borderTop:"1px solid var(--border)",background:"var(--bg-base)"}}>
+        <div className="relative group">
+          <div className="flex items-end gap-2 rounded-2xl px-3 py-2.5 transition-all duration-300 focus-within:ring-1 focus-within:ring-[var(--blue-border)]"
             style={{
-              background:loading||(input.trim()===""&&!selectedFile)?"var(--bg-card)":"var(--blue)",
-              color:loading||(input.trim()===""&&!selectedFile)?"var(--text-faint)":"white",
-              cursor:loading||(input.trim()===""&&!selectedFile)?"not-allowed":"pointer",
-              boxShadow:loading||(input.trim()===""&&!selectedFile)?"none":"0 2px 12px var(--blue-glow)",
+              background:"var(--bg-elevated)",
+              border:`1px solid ${noKey?"var(--yellow-border)":"var(--border)"}`,
+              boxShadow:"0 2px 12px rgba(0,0,0,0.1)"
             }}>
-            <Send size={14}/>
-          </button>
+            <button onClick={()=>fileInputRef.current?.click()}
+              className="p-2 flex-shrink-0 mb-0.5 rounded-xl hover:bg-white/5 transition-all duration-200"
+              style={{color:"var(--text-secondary)"}} title="Upload file">
+              <Upload size={16}/>
+            </button>
+            <input ref={fileInputRef} type="file" className="hidden"
+              onChange={(e:ChangeEvent<HTMLInputElement>)=>{if(e.target.files?.[0])setSelectedFile(e.target.files[0]);}}
+              accept="image/*,video/*,audio/*,.pdf,.txt,.md,.docx,.csv"/>
+            <button onClick={isRecording?stopRecording:startRecording}
+              className="p-2 flex-shrink-0 mb-0.5 rounded-xl transition-all duration-200 hover:bg-white/5"
+              style={{color:isRecording?"#ff6b6b":"var(--text-secondary)"}}>
+              {isRecording?<StopCircle size={16} className="animate-pulse"/>:<Mic size={16} className={isRecording?"":"opacity-60"}/>}
+            </button>
+            <textarea ref={textareaRef} rows={1}
+              className="flex-1 bg-transparent resize-none outline-none leading-relaxed py-2 text-[13.5px] placeholder:opacity-40"
+              style={{color:"var(--text-primary)",fontFamily:"var(--font-body)"}}
+              placeholder={noKey?"Add your API key in Settings first…":`Ask anything about any topic${language!=="English"?` · ${language}`:""}…`}
+              value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={loading}
+            />
+            <button onClick={handleSend} disabled={loading||(input.trim()===""&&!selectedFile)}
+              className="p-2.5 rounded-xl flex-shrink-0 transition-all duration-300 disabled:opacity-30"
+              style={{
+                background:loading||(input.trim()===""&&!selectedFile)?"var(--bg-card)":"var(--blue)",
+                color:loading||(input.trim()===""&&!selectedFile)?"var(--text-faint)":"white",
+                cursor:loading||(input.trim()===""&&!selectedFile)?"not-allowed":"pointer",
+                boxShadow:loading||(input.trim()===""&&!selectedFile)?"none":"0 4px 16px var(--blue-glow)",
+                transform:loading?"scale(0.95)":"scale(1)",
+              }}>
+              {loading ? <Loader2 size={16} className="animate-spin"/> : <Send size={16} className={input.trim()||selectedFile?"translate-x-0.5 -translate-y-0.5":""}/>}
+            </button>
+          </div>
+          {/* Subtle decoration */}
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-[var(--blue)] to-[var(--periwinkle)] rounded-[18px] opacity-0 group-focus-within:opacity-10 blur transition-opacity duration-500 pointer-events-none"></div>
         </div>
-        <p className="text-center mt-2" style={{color:"var(--text-faint)",fontSize:10,fontFamily:"var(--font-body)"}}>
-          Enter to send · Shift+Enter for new line · PDF, images, audio, text & markdown supported
+        <p className="text-center mt-3" style={{color:"var(--text-muted)",fontSize:10,fontFamily:"var(--font-body)",letterSpacing:"0.01em"}}>
+          <span className="opacity-60">Enter to send</span> · <span className="opacity-60">Shift+Enter for new line</span> · <span className="opacity-40 font-medium">PDF, Image, Audio, CSV</span>
         </p>
       </div>
     </div>

@@ -73,18 +73,20 @@ html, body, #root {
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 
 /* ── Prose — AI message markdown ── */
-.sm-prose { color: var(--text-secondary); font-size: 13.5px; line-height: 1.75; }
-.sm-prose p { margin: 5px 0; }
+.sm-prose { color: var(--text-secondary); font-size: 14px; line-height: 1.8; }
+.sm-prose p { margin: 10px 0; }
+.sm-prose p:first-child { margin-top: 0; }
+.sm-prose p:last-child { margin-bottom: 0; }
 .sm-prose h1,.sm-prose h2,.sm-prose h3 {
   font-family: var(--font-display);
   color: var(--text-primary);
   font-weight: 700;
-  margin: 14px 0 6px;
+  margin: 20px 0 10px;
   letter-spacing: -0.01em;
 }
-.sm-prose h1 { font-size: 15px; }
-.sm-prose h2 { font-size: 14px; }
-.sm-prose h3 { font-size: 13px; color: var(--blue); }
+.sm-prose h1 { font-size: 17px; }
+.sm-prose h2 { font-size: 15px; }
+.sm-prose h3 { font-size: 14px; color: var(--blue); }
 .sm-prose strong { color: var(--text-primary); font-weight: 600; }
 .sm-prose em { color: var(--text-secondary); font-style: italic; }
 .sm-prose code {
@@ -93,43 +95,63 @@ html, body, #root {
   border: 1px solid var(--blue-border);
   padding: 1px 6px;
   border-radius: 5px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-family: 'SF Mono','Fira Code',monospace;
 }
 .sm-prose pre {
   background: var(--bg-base);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
+  border-radius: 12px;
+  padding: 16px;
   overflow-x: auto;
-  margin: 10px 0;
+  margin: 16px 0;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
 }
-.sm-prose pre code { background: none; border: none; padding: 0; color: var(--text-secondary); }
-.sm-prose a { color: var(--blue); text-decoration: none; }
-.sm-prose a:hover { text-decoration: underline; }
-.sm-prose ul,.sm-prose ol { padding-left: 18px; margin: 6px 0; }
-.sm-prose li { margin: 3px 0; }
-.sm-prose table { font-size: 12px; border-collapse: collapse; width: 100%; margin: 10px 0; }
+.sm-prose pre code { background: none; border: none; padding: 0; color: var(--text-secondary); font-size: 12px; }
+.sm-prose a { color: var(--blue); text-decoration: none; border-bottom: 1px dashed var(--blue-border); }
+.sm-prose a:hover { border-bottom-style: solid; }
+.sm-prose ul,.sm-prose ol { padding-left: 20px; margin: 12px 0; }
+.sm-prose li { margin: 6px 0; }
+.sm-prose table { 
+  font-size: 13px; 
+  border-collapse: separate; 
+  border-spacing: 0;
+  width: 100%; 
+  margin: 16px 0; 
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
 .sm-prose th {
-  color: var(--text-muted);
-  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  font-weight: 700;
   text-align: left;
-  padding: 6px 10px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-md);
   font-family: var(--font-display);
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.02em;
 }
-.sm-prose td { color: var(--text-secondary); padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.sm-prose td { 
+  color: var(--text-secondary); 
+  padding: 10px 14px; 
+  border-bottom: 1px solid var(--border); 
+  vertical-align: top;
+}
+.sm-prose tr:last-child td { border-bottom: none; }
 .sm-prose blockquote {
-  border-left: 2px solid var(--periwinkle-border);
-  padding-left: 12px;
+  border-left: 3px solid var(--periwinkle-border);
+  padding-left: 16px;
   color: var(--text-muted);
-  margin: 8px 0;
+  margin: 16px 0;
   font-style: italic;
+  background: rgba(126,161,255,0.03);
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-radius: 0 8px 8px 0;
 }
-.sm-prose hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.sm-prose hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 
 /* ── Glow pulse for loading ── */
 @keyframes glow-pulse {
