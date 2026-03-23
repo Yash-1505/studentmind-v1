@@ -4,7 +4,7 @@ import {
   Send, Upload, Mic, StopCircle, X, FileText,
   BookOpen, Map, Brain, Search, MessageSquare,
   Loader2, AlertTriangle, Copy, Check, Share2,
-  RotateCcw, Download
+  RotateCcw, Download, Bookmark
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -285,10 +285,11 @@ export default function ChatInterface({
     }
 
     // All other providers
-    let content = knowledgeContext ? `${knowledgeContext}User Question: ${userText}` : userText;
+    const contextPrefix = knowledgeContext ? `${knowledgeContext}User Question: ` : "";
+    let content = `${contextPrefix}${userText}`;
     if(file){
-      try{ content = `${userText}\n\n[File: ${file.name}]\n\n${await file.text()}`; }
-      catch{ content = `${userText}\n\n[File: ${file.name} — binary]`; }
+      try{ content = `${contextPrefix}${userText}\n\n[File: ${file.name}]\n\n${await file.text()}`; }
+      catch{ content = `${contextPrefix}${userText}\n\n[File: ${file.name} — binary]`; }
     }
     chatHistory.current.push({role:"user", content});
     if(chatHistory.current.length>40) chatHistory.current = chatHistory.current.slice(-40);
@@ -306,7 +307,7 @@ export default function ChatInterface({
 
     chatHistory.current.push({role:"assistant", content:result});
     return result;
-  }, [activeProvider, apiKey, selectedModel]);
+  }, [activeProvider, apiKey, selectedModel, selectedSources, geminiKey]);
 
   // ─── FIX 3: handleSend — single atomic update, one save per exchange ───────────
 
@@ -338,27 +339,20 @@ export default function ChatInterface({
         mode:currentMode, model:selectedModel, timestamp:new Date().toISOString(),
       };
 
-      // FIX: single setMessages call combining both messages, then one save
-      setMessages(prev=>{
-        const next = [...prev, aiMsg];
-        // Call onSessionUpdate once with final state — not via useEffect
-        onSessionUpdate?.(next);
-        return next;
-      });
+      setMessages(prev => [...prev, aiMsg]);
+      // onSessionUpdate called outside the updater — pure side effect, safe for React 18 Strict Mode
+      onSessionUpdate?.([...messages, userMsg, aiMsg]);
     }catch(err:any){
       const errMsg:ChatMessage = {
         id:genId(), text:`⚠️ **Error**: ${err.message}`, sender:"ai",
         mode:currentMode, timestamp:new Date().toISOString(), isError:true,
       };
-      setMessages(prev=>{
-        const next = [...prev, errMsg];
-        onSessionUpdate?.(next);
-        return next;
-      });
+      setMessages(prev => [...prev, errMsg]);
+      onSessionUpdate?.([...messages, userMsg, errMsg]);
     }finally{
       setLoading(false);
     }
-  }, [loading, input, selectedFile, currentMode, callAI, language, sarvamKey, googleTranslateKey, trackProgress, onSessionUpdate]);
+  }, [loading, input, selectedFile, currentMode, callAI, language, sarvamKey, googleTranslateKey, trackProgress, onSessionUpdate, messages]);
 
   // ─── Other handlers ────────────────────────────────────────────────────────────
 
