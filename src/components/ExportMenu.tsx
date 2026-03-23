@@ -12,7 +12,7 @@ const FORMATS = [
   { id:"txt",  label:"Plain Text",    icon:<FileText size={11}/>, desc:"Simple & universal",      color:"var(--text-muted)" },
 ] as const;
 
-export default function ExportMenu({ text, mode, title }: Props) {
+export default function ExportMenu({ text, mode, model, title }: Props) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
