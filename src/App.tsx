@@ -336,7 +336,7 @@ export default function App() {
             onNewSession={handleNewSession} onClose={()=>setShowHistory(false)}/>
         )}
         <main className="flex-1 overflow-hidden">
-          <ChatInterface language={settings.language} trackProgress={settings.trackProgress}
+          <ChatInterface key={currentSessionId} language={settings.language} trackProgress={settings.trackProgress}
             activeProvider={settings.activeProvider}
             apiKey={settings.apiKeys[settings.activeProvider]||(settings.activeProvider==="gemini"?(process.env.GEMINI_API_KEY||""):"")}
             geminiKey={settings.apiKeys["gemini"]||process.env.GEMINI_API_KEY||""}
