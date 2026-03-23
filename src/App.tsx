@@ -73,13 +73,25 @@ const AI_PROVIDERS: AIProvider[] = [
   },
   {
     id:"nvidia", name:"NVIDIA NIM", logo:"N", color:"text-[#76B900]", bgColor:"bg-[rgba(118,185,0,0.08)]", borderColor:"border-[rgba(118,185,0,0.22)]",
-    keyPlaceholder:"nvapi-...", keyHint:"Free credits for prototyping", keyLink:"https://build.nvidia.com", keyLinkLabel:"build.nvidia.com → Get API Key",
+    keyPlaceholder:"nvapi-...", keyHint:"Free credits — 1000 req/month on most models", keyLink:"https://build.nvidia.com", keyLinkLabel:"build.nvidia.com → Get API Key",
     models:[
-      {id:"nvidia/llama-3.1-405b-instruct",label:"Llama 3.1 405B",description:"NVIDIA optimized", contextWindow: 512000, smart:true},
-      {id:"nvidia/nemotron-4-340b-instruct",label:"Nemotron-4 340B",description:"High performance", contextWindow: 128000},
-      {id:"nvidia/mistral-nemo-12b-instruct",label:"Mistral Nemo 12B",description:"Efficient & smart", contextWindow: 512000, fast:true},
-      {id:"nvidia/nemotron-3-8b-chat",label:"Nemotron-3 8B",description:"Lightweight chat", contextWindow: 32000, fast:true},
-      {id:"nvidia/phi-3-mini-128k-instruct",label:"Phi-3 Mini 128K",description:"Microsoft tiny model", contextWindow: 128000}
+      // ── Nemotron 3 family (NVIDIA's latest open models, 2025) ──────────────────
+      {id:"nvidia/nemotron-3-super-120b-a12b",label:"Nemotron Super 120B",description:"Hybrid MoE · 1M ctx · best reasoning & agentic", contextWindow:1000000, smart:true},
+      // ── Llama 3.3 / 3.1 ──────────────────────────────────────────────────────
+      {id:"meta/llama-3.3-70b-instruct",label:"Llama 3.3 70B",description:"Best open chat & instruction following", contextWindow:128000, smart:true},
+      {id:"meta/llama-3.1-8b-instruct",label:"Llama 3.1 8B",description:"Fast & lightweight", contextWindow:128000, fast:true},
+      {id:"meta/llama-3.1-405b-instruct",label:"Llama 3.1 405B",description:"Largest open model · highest accuracy", contextWindow:128000},
+      // ── Qwen 3.5 (newest, free endpoint) ─────────────────────────────────────
+      {id:"qwen/qwen3.5-122b-a10b",label:"Qwen 3.5 122B MoE",description:"Free · coding, reasoning & multimodal chat", contextWindow:131072, smart:true},
+      // ── MiniMax (free endpoint) ───────────────────────────────────────────────
+      {id:"minimaxai/minimax-m2.1",label:"MiniMax M2.1",description:"Free · multilingual · coding & office AI", contextWindow:1000000, fast:true},
+      // ── Mistral ──────────────────────────────────────────────────────────────
+      {id:"mistralai/mistral-small-4-119b-2603",label:"Mistral Small 4 119B",description:"Hybrid MoE · reasoning, coding & multimodal", contextWindow:256000},
+      {id:"mistralai/mistral-nemo-12b-instruct",label:"Mistral Nemo 12B",description:"Efficient & smart", contextWindow:128000, fast:true},
+      // ── Microsoft Phi ─────────────────────────────────────────────────────────
+      {id:"microsoft/phi-4-mini-instruct",label:"Phi-4 Mini",description:"Fast edge model · strong reasoning per param", contextWindow:128000, fast:true},
+      // ── DeepSeek R1 ──────────────────────────────────────────────────────────
+      {id:"deepseek-ai/deepseek-r1",label:"DeepSeek R1",description:"Chain-of-thought reasoning · STEM & math", contextWindow:128000, smart:true},
     ],
   },
   {
@@ -120,7 +132,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     anthropic:"claude-3-5-haiku-20241022",
     cohere:"command-r-08-2024",
     sarvam:"sarvam-2b-v0.5",
-    nvidia:"nvidia/mistral-nemo-12b-instruct",
+    nvidia:"meta/llama-3.3-70b-instruct",
     ollama:"llama3.2"
   },
   apiKeys:{},language:"English",trackProgress:false,sarvamKey:"",googleTranslateKey:"",
